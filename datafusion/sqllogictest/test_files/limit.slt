@@ -1299,3 +1299,64 @@ SET datafusion.optimizer.max_passes = 3;
 
 statement ok
 DROP TABLE t23534;
+
+# ORDER BY ... LIMIT over an OFFSET subquery on multi-partition sorted data (issue #26690)
+statement ok
+SET datafusion.execution.target_partitions = 2;
+
+query I
+COPY (SELECT value AS a FROM generate_series(1, 20) ORDER BY a)
+TO 'test_files/scratch/limit/offset_merge/p1.parquet';
+----
+20
+
+query I
+COPY (SELECT value AS a FROM generate_series(21, 40) ORDER BY a)
+TO 'test_files/scratch/limit/offset_merge/p2.parquet';
+----
+20
+
+statement ok
+CREATE EXTERNAL TABLE t_offset (a BIGINT)
+STORED AS PARQUET
+LOCATION 'test_files/scratch/limit/offset_merge/'
+WITH ORDER (a ASC);
+
+query TT
+EXPLAIN SELECT * FROM (SELECT * FROM t_offset OFFSET 5) ORDER BY a LIMIT 10;
+----
+logical_plan
+01)Sort: t_offset.a ASC NULLS LAST, fetch=10
+02)--Limit: skip=5, fetch=None
+03)----TableScan: t_offset projection=[a]
+physical_plan
+01)GlobalLimitExec: skip=5, fetch=10
+02)--SortPreservingMergeExec: [a@0 ASC NULLS LAST], fetch=15
+03)----DataSourceExec: file_groups={2 groups: [[WORKSPACE_ROOT/datafusion/sqllogictest/test_files/scratch/limit/offset_merge/p1.parquet], [WORKSPACE_ROOT/datafusion/sqllogictest/test_files/scratch/limit/offset_merge/p2.parquet]]}, projection=[a], limit=15, output_ordering=[a@0 ASC NULLS LAST], file_type=parquet
+
+query I
+SELECT * FROM (SELECT * FROM t_offset OFFSET 5) ORDER BY a LIMIT 10;
+----
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+
+query I
+SELECT count(*) FROM (SELECT * FROM (SELECT * FROM t_offset LIMIT 30 OFFSET 15) ORDER BY a LIMIT 10) WHERE a > 0;
+----
+10
+
+statement ok
+DROP TABLE t_offset;
+
+statement ok
+SET datafusion.execution.target_partitions = 4;
+
+

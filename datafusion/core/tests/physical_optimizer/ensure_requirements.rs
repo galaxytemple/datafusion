@@ -1674,3 +1674,26 @@ fn test_keep_sort_above_local_limit() -> Result<()> {
     ");
     Ok(())
 }
+
+/// When the input is already sorted, `replace_with_order_preserving_variants`
+/// drops `SortExec` and replaces `CoalescePartitionsExec` with `SortPreservingMergeExec`.
+///
+/// If there is an intermediate `GlobalLimitExec` with a non-zero `skip` (e.g. `OFFSET 5`),
+/// the merge must ask for `skip + fetch` rows (5 + 10 = 15).
+#[test]
+fn test_order_preserving_merge_below_limit_with_skip_keeps_skip_rows() -> Result<()> {
+    let source = Arc::new(MockMultiPartitionExec::new(4));
+    let coalesce = Arc::new(CoalescePartitionsExec::new(source));
+    let limit = Arc::new(GlobalLimitExec::new(coalesce, 5, None));
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(
+        SortExec::new(sort_expr_on("a", 0, false, false), limit).with_fetch(Some(10)),
+    );
+
+    let optimized = optimize_and_sanity_check(sort)?;
+    assert_snapshot!(plan_string(&optimized), @r"
+    GlobalLimitExec: skip=5, fetch=None
+      SortPreservingMergeExec: [a@0 ASC NULLS LAST], fetch=15
+        MockMultiPartitionExec
+    ");
+    Ok(())
+}

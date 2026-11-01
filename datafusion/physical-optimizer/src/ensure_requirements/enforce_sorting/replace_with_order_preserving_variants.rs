@@ -8,6 +8,8 @@
 
 use std::sync::Arc;
 
+use super::input_fetch;
+
 use crate::utils::{
     is_coalesce_partitions, is_repartition, is_sort, is_sort_preserving_merge,
 };
@@ -97,6 +99,7 @@ pub fn plan_with_order_preserving_variants(
         sort_input.data = false;
         return Ok(sort_input);
     }
+    let child_fetch = input_fetch(&sort_input.plan, fetch);
     sort_input.children = sort_input
         .children
         .into_iter()
@@ -107,7 +110,7 @@ pub fn plan_with_order_preserving_variants(
                     node,
                     is_spr_better,
                     is_spm_better,
-                    fetch,
+                    child_fetch,
                 )
             } else {
                 Ok(node)

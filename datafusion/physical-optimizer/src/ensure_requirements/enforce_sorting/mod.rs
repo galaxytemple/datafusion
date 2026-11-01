@@ -48,7 +48,7 @@ use datafusion_common::tree_node::Transformed;
 use datafusion_physical_expr::{Distribution, Partitioning};
 use datafusion_physical_expr_common::sort_expr::{LexOrdering, LexRequirement};
 use datafusion_physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion_physical_plan::limit::LocalLimitExec;
+use datafusion_physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::sorts::partial_sort::PartialSortExec;
 use datafusion_physical_plan::sorts::sort::SortExec;
@@ -795,4 +795,31 @@ fn get_sort_exprs(
     }
 }
 
+/// Input row bound used by sort-pushdown and replace-with-order-preserving-variants handlers.
+///
+/// `parent_fetch` is the fetch a parent imposes on `plan`'s *output*.
+/// It bounds `plan.fetch()` directly because both count output rows, so the
+/// effective output fetch is `min(plan.fetch(), parent_fetch)`.
+///
+/// For these operators, the input fetch is that output fetch except for
+/// [`GlobalLimitExec`], which discards `skip` rows first and therefore needs
+/// `skip` more input rows. `skip` must be added *after* taking the minimum:
+/// `min(fetch + skip, parent_fetch)` would be too small whenever the parent
+/// fetch is the tighter bound. Using the bare `fetch` would be wrong too, as
+/// it would turn `LIMIT 10 OFFSET 5` into `TopK(10)` below the limit, i.e. 5
+/// result rows.
+pub(crate) fn input_fetch(
+    plan: &Arc<dyn ExecutionPlan>,
+    parent_fetch: Option<usize>,
+) -> Option<usize> {
+    let skip = plan
+        .downcast_ref::<GlobalLimitExec>()
+        .map_or(0, |limit| limit.skip());
+    let output = RowBound::fetch(plan.fetch()).min(RowBound::fetch(parent_fetch));
+    RowBound {
+        skip,
+        fetch: output.fetch,
+    }
+    .input_rows()
+}
 // Tests are in tests/cases/enforce_sorting.rs

@@ -40,6 +40,7 @@ use datafusion_physical_plan::{
     ExecutionPlanProperties, LimitBehavior, ReplaceChildrenOptions,
 };
 
+use super::input_fetch;
 use crate::row_bound::{RowBound, limit_node};
 
 /// "Data class" used by sort pushdown (now driven from `EnsureRequirements`)
@@ -69,35 +70,6 @@ impl Default for ParentRequirements {
 }
 
 pub type SortPushDown = PlanContext<ParentRequirements>;
-
-/// Input row bound used by the specialized sort-pushdown handlers.
-///
-/// `parent_fetch` is the fetch a parent imposes on `plan`'s *output*
-/// (`ParentRequirements::fetch`). It bounds `plan.fetch()` directly because
-/// both count output rows, so the effective output fetch is
-/// `min(plan.fetch(), parent_fetch)`.
-///
-/// For these operators, the input fetch is that output fetch except for
-/// [`GlobalLimitExec`], which discards `skip` rows first and therefore needs
-/// `skip` more input rows. `skip` must be added *after* taking the minimum:
-/// `min(fetch + skip, parent_fetch)` would be too small whenever the parent
-/// fetch is the tighter bound. Using the bare `fetch` would be wrong too, as
-/// it would turn `LIMIT 10 OFFSET 5` into `TopK(10)` below the limit, i.e. 5
-/// result rows.
-fn input_fetch(
-    plan: &Arc<dyn ExecutionPlan>,
-    parent_fetch: Option<usize>,
-) -> Option<usize> {
-    let skip = plan
-        .downcast_ref::<GlobalLimitExec>()
-        .map_or(0, |limit| limit.skip());
-    let output = RowBound::fetch(plan.fetch()).min(RowBound::fetch(parent_fetch));
-    RowBound {
-        skip,
-        fetch: output.fetch,
-    }
-    .input_rows()
-}
 
 /// Assigns the ordering requirement of the root node to the its children.
 pub fn assign_initial_requirements(sort_push_down: &mut SortPushDown) {
